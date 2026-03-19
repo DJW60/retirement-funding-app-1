@@ -1,0 +1,51 @@
+{
+  "name": "Australian resident personal income tax rules",
+  "source_name": "Australian Taxation Office",
+  "source_url": "https://www.ato.gov.au/tax-rates-and-codes/tax-rates-australian-residents?%2Ftax-rates-australian-residents=",
+  "notes": [
+    "This starter applies resident tax brackets, the low income tax offset, and a simple 2% Medicare levy.",
+    "It does not yet model Medicare levy reductions and exemptions, SAPTO, HELP, MLS, or detailed super pension tax treatment."
+  ],
+  "records": [
+    {
+      "effective_from": "2025-07-01",
+      "financial_year": "2025-26",
+      "resident_brackets": [
+        {
+          "threshold": 0.0,
+          "base_tax": 0.0,
+          "rate": 0.0
+        },
+        {
+          "threshold": 18200.0,
+          "base_tax": 0.0,
+          "rate": 0.16
+        },
+        {
+          "threshold": 45000.0,
+          "base_tax": 4288.0,
+          "rate": 0.30
+        },
+        {
+          "threshold": 135000.0,
+          "base_tax": 31288.0,
+          "rate": 0.37
+        },
+        {
+          "threshold": 190000.0,
+          "base_tax": 51638.0,
+          "rate": 0.45
+        }
+      ],
+      "medicare_levy_rate": 0.02,
+      "lito": {
+        "max_offset": 700.0,
+        "full_amount_up_to": 37500.0,
+        "phaseout_midpoint": 45000.0,
+        "phaseout_end": 66667.0,
+        "phaseout_rate_1": 0.05,
+        "phaseout_rate_2": 0.015
+      }
+    }
+  ]
+}

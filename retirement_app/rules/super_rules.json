@@ -1,0 +1,90 @@
+{
+  "name": "Australian superannuation planning rules",
+  "source_name": "Australian Taxation Office",
+  "source_url": "https://www.ato.gov.au/tax-rates-and-codes/key-superannuation-rates-and-thresholds/contributions-caps",
+  "notes": [
+    "This starter app applies contribution tax to concessional contributions only.",
+    "It does not yet model carry-forward concessional caps, bring-forward non-concessional rules, or detailed tax components on withdrawal."
+  ],
+  "records": [
+    {
+      "effective_from": "2025-07-01",
+      "financial_year": "2025-26",
+      "super_guarantee_rate": 0.12,
+      "concessional_cap": 30000.0,
+      "non_concessional_cap": 120000.0,
+      "contributions_tax_rate": 0.15,
+      "division_293_threshold": 250000.0,
+      "general_transfer_balance_cap": 2000000.0,
+      "age_pension_age": 67,
+      "account_based_pension_minimum_factors": [
+        {
+          "min_age": 0,
+          "max_age": 64,
+          "rate": 0.04
+        },
+        {
+          "min_age": 65,
+          "max_age": 74,
+          "rate": 0.05
+        },
+        {
+          "min_age": 75,
+          "max_age": 79,
+          "rate": 0.06
+        },
+        {
+          "min_age": 80,
+          "max_age": 84,
+          "rate": 0.07
+        },
+        {
+          "min_age": 85,
+          "max_age": 89,
+          "rate": 0.09
+        },
+        {
+          "min_age": 90,
+          "max_age": 94,
+          "rate": 0.11
+        },
+        {
+          "min_age": 95,
+          "max_age": 200,
+          "rate": 0.14
+        }
+      ],
+      "tris_maximum_rate": 0.1,
+      "preservation_age_schedule": [
+        {
+          "born_before": "1960-07-01",
+          "preservation_age": 55
+        },
+        {
+          "born_from": "1960-07-01",
+          "born_to": "1961-06-30",
+          "preservation_age": 56
+        },
+        {
+          "born_from": "1961-07-01",
+          "born_to": "1962-06-30",
+          "preservation_age": 57
+        },
+        {
+          "born_from": "1962-07-01",
+          "born_to": "1963-06-30",
+          "preservation_age": 58
+        },
+        {
+          "born_from": "1963-07-01",
+          "born_to": "1964-06-30",
+          "preservation_age": 59
+        },
+        {
+          "born_from": "1964-07-01",
+          "preservation_age": 60
+        }
+      ]
+    }
+  ]
+}

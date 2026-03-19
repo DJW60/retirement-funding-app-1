@@ -1,0 +1,35 @@
+{
+  "name": "Age Pension assets test",
+  "source_name": "Services Australia",
+  "source_url": "https://www.servicesaustralia.gov.au/assets-test-for-age-pension?context=22526",
+  "notes": [
+    "This starter app uses the standard homeowner and non-homeowner limits.",
+    "Rent Assistance and separated-due-to-illness variants are not modelled yet."
+  ],
+  "records": [
+    {
+      "effective_from": "2025-09-20",
+      "taper_per_1000_fortnight": 3.0,
+      "full_pension_thresholds": {
+        "single": {
+          "homeowner": 321500.0,
+          "non_homeowner": 579500.0
+        },
+        "couple": {
+          "homeowner": 481500.0,
+          "non_homeowner": 739500.0
+        }
+      },
+      "cutoff_thresholds": {
+        "single": {
+          "homeowner": 714500.0,
+          "non_homeowner": 972500.0
+        },
+        "couple": {
+          "homeowner": 1074000.0,
+          "non_homeowner": 1332000.0
+        }
+      }
+    }
+  ]
+}

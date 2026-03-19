@@ -1,0 +1,25 @@
+{
+  "name": "Deeming rates and thresholds",
+  "source_name": "Services Australia",
+  "source_url": "https://www.servicesaustralia.gov.au/deeming",
+  "notes": [
+    "The 1 July 2025 thresholds are taken from the published Services Australia operational deeming table.",
+    "The 20 March 2026 rate record uses the public Services Australia deeming announcement and assumes thresholds stay unchanged until the next published threshold update."
+  ],
+  "records": [
+    {
+      "effective_from": "2025-07-01",
+      "single_threshold": 64200.0,
+      "couple_pensioner_combined_threshold": 106200.0,
+      "lower_rate": 0.0025,
+      "upper_rate": 0.0225
+    },
+    {
+      "effective_from": "2026-03-20",
+      "single_threshold": 64200.0,
+      "couple_pensioner_combined_threshold": 106200.0,
+      "lower_rate": 0.0125,
+      "upper_rate": 0.0325
+    }
+  ]
+}

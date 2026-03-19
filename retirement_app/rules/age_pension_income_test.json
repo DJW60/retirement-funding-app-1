@@ -1,0 +1,20 @@
+{
+  "name": "Age Pension income test",
+  "source_name": "Services Australia",
+  "source_url": "https://www.servicesaustralia.gov.au/income-test-for-age-pension?context=22526",
+  "notes": [
+    "This starter app uses the standard rules, not transitional pension rules.",
+    "Couple calculations use combined household income and return a combined pension estimate."
+  ],
+  "records": [
+    {
+      "effective_from": "2026-02-20",
+      "single_free_area_fortnight": 218.0,
+      "single_taper_per_dollar": 0.5,
+      "single_cutoff_fortnight": 2575.4,
+      "couple_combined_free_area_fortnight": 380.0,
+      "couple_each_taper_per_dollar": 0.25,
+      "couple_combined_cutoff_fortnight": 3934.0
+    }
+  ]
+}

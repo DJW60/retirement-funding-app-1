@@ -1,0 +1,17 @@
+{
+  "name": "Age Pension maximum payment rates",
+  "source_name": "Services Australia",
+  "source_url": "https://www.servicesaustralia.gov.au/how-much-age-pension-you-can-get?context=22526",
+  "notes": [
+    "Rates are fortnightly maximum normal rates before tax.",
+    "This starter app uses the standard single and couple-combined rates only."
+  ],
+  "records": [
+    {
+      "effective_from": "2025-09-20",
+      "single_fortnight": 1178.7,
+      "couple_each_fortnight": 888.5,
+      "couple_combined_fortnight": 1777.0
+    }
+  ]
+}
