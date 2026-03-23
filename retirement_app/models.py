@@ -17,6 +17,12 @@ class CashInheritanceEvent:
 
 
 @dataclass(frozen=True)
+class UnusedConcessionalCapAmount:
+    financial_year: str
+    amount: float
+
+
+@dataclass(frozen=True)
 class PersonProfile:
     label: str
     birth_date: date
@@ -30,6 +36,9 @@ class PersonProfile:
     employer_super_rate: float
     annual_salary_sacrifice: float
     annual_after_tax_contribution: float
+    employer_super_annual_amount_override: float | None = None
+    carry_forward_previous_30_june_total_super_balance: float | None = None
+    unused_concessional_cap_amounts: tuple[UnusedConcessionalCapAmount, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -47,6 +56,7 @@ class RetirementInputs:
     annual_return_pre: float
     annual_return_post: float
     inflation_rate: float
+    use_financial_assets_for_spending: bool = True
     cash_inheritance_event: CashInheritanceEvent | None = None
     target_estate: float = 0.0
     as_of_date: date = field(default_factory=date.today)

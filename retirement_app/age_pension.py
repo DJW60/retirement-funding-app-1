@@ -48,12 +48,24 @@ def assess_age_pension(
 ) -> dict[str, Any]:
     age_pension_age = get_age_pension_age(as_of_date)
     eligible_person_count = sum(1 for age in ages if int(age) >= age_pension_age)
+    rate_rules = get_effective_record("age_pension_rates.json", as_of_date)
+    full_couple_rate_fortnight = _inflate(
+        float(rate_rules["couple_combined_fortnight"]),
+        years_from_today,
+        inflation_rate,
+    )
     if eligible_person_count == 0:
         return {
             "eligible": False,
             "eligible_person_count": 0,
             "annual_pension": 0.0,
             "fortnightly_pension": 0.0,
+            "full_pension_annual": 0.0,
+            "full_couple_pension_annual": (
+                round(full_couple_rate_fortnight * 26.0, 2) if relationship_status == "couple" else None
+            ),
+            "is_full_pension": False,
+            "is_full_couple_pension": False,
             "income_test_rate_fortnight": 0.0,
             "assets_test_rate_fortnight": 0.0,
             "deemed_income_annual": 0.0,
@@ -66,7 +78,6 @@ def assess_age_pension(
             "binding_test": "Not yet age eligible",
         }
 
-    rate_rules = get_effective_record("age_pension_rates.json", as_of_date)
     income_rules = get_effective_record("age_pension_income_test.json", as_of_date)
     asset_rules = get_effective_record("age_pension_assets_test.json", as_of_date)
 
@@ -147,11 +158,26 @@ def assess_age_pension(
     else:
         binding_test = "Tests produce similar result"
 
+    annual_pension = round(fortnightly_pension * 26.0, 2)
+    full_pension_annual = round(max_rate_fortnight * 26.0, 2)
+    full_couple_pension_annual = (
+        round(full_couple_rate_fortnight * 26.0, 2) if relationship_status == "couple" else None
+    )
+
     return {
         "eligible": True,
         "eligible_person_count": int(eligible_person_count),
-        "annual_pension": round(fortnightly_pension * 26.0, 2),
+        "annual_pension": annual_pension,
         "fortnightly_pension": round(fortnightly_pension, 2),
+        "full_pension_annual": full_pension_annual,
+        "full_couple_pension_annual": full_couple_pension_annual,
+        "is_full_pension": abs(annual_pension - full_pension_annual) <= 0.01,
+        "is_full_couple_pension": (
+            relationship_status == "couple"
+            and eligible_person_count >= 2
+            and full_couple_pension_annual is not None
+            and abs(annual_pension - full_couple_pension_annual) <= 0.01
+        ),
         "income_test_rate_fortnight": round(income_test_rate_fortnight, 2),
         "assets_test_rate_fortnight": round(assets_test_rate_fortnight, 2),
         "deemed_income_annual": round(deemed_income_annual, 2),

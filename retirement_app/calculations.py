@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+import math
 
 import pandas as pd
 
@@ -12,6 +13,7 @@ from .superannuation import (
     calculate_age,
     calculate_preservation_age,
     calculate_super_contribution_summary,
+    get_financial_year_start_year,
     get_account_based_pension_minimum_rate,
 )
 
@@ -19,6 +21,7 @@ from .superannuation import (
 _MAX_SEARCH_SALARY_SACRIFICE = 300_000.0
 _MAX_SEARCH_SPENDING = 500_000.0
 _SEARCH_STEPS = 40
+_CURRENCY_TOLERANCE = 0.005
 _SUPER_PRODUCT_TYPES = {
     "accumulation",
     "account_based_pension",
@@ -48,6 +51,19 @@ def _super_product_label(value: str) -> str:
 
 def _round_currency(value: float) -> float:
     return round(float(value), 2)
+
+
+def _round_currency_down(value: float) -> float:
+    return math.floor((float(value) + 1e-9) * 100.0) / 100.0
+
+
+def _round_currency_up(value: float) -> float:
+    return math.ceil((float(value) - 1e-9) * 100.0) / 100.0
+
+
+def _positive_currency_gap(value: float) -> float:
+    value = float(value)
+    return value if value > _CURRENCY_TOLERANCE else 0.0
 
 
 def _dedupe_warnings(messages: list[str]) -> list[str]:
@@ -82,9 +98,19 @@ def _validate_person(person: PersonProfile, as_of_date) -> None:
         "annual_salary_sacrifice": person.annual_salary_sacrifice,
         "annual_after_tax_contribution": person.annual_after_tax_contribution,
     }
+    if person.employer_super_annual_amount_override is not None:
+        non_negative_fields["employer_super_annual_amount_override"] = person.employer_super_annual_amount_override
+    if person.carry_forward_previous_30_june_total_super_balance is not None:
+        non_negative_fields["carry_forward_previous_30_june_total_super_balance"] = (
+            person.carry_forward_previous_30_june_total_super_balance
+        )
     for field_name, value in non_negative_fields.items():
         if float(value) < 0.0:
             raise ValueError(f"{person.label} {field_name} cannot be negative.")
+
+    for entry in person.unused_concessional_cap_amounts:
+        if float(entry.amount) < 0.0:
+            raise ValueError(f"{person.label} unused concessional cap amount cannot be negative.")
 
     rate_fields = {
         "annual_salary_growth": person.annual_salary_growth,
@@ -392,6 +418,7 @@ def project_retirement(inputs: RetirementInputs) -> RetirementProjection:
     cash_inheritance_event = inputs.cash_inheritance_event
     inheritance_trigger_offset: int | None = None
     inheritance_within_horizon = False
+    current_financial_year_start_year = get_financial_year_start_year(inputs.as_of_date)
 
     if cash_inheritance_event is not None and float(cash_inheritance_event.amount) > 0.0:
         inheritance_trigger_offset = _resolve_cash_inheritance_trigger_offset(
@@ -408,6 +435,10 @@ def project_retirement(inputs: RetirementInputs) -> RetirementProjection:
             employer_super_rate=float(person.employer_super_rate),
             annual_salary_sacrifice=float(person.annual_salary_sacrifice),
             annual_after_tax_contribution=float(person.annual_after_tax_contribution),
+            employer_super_annual_amount_override=person.employer_super_annual_amount_override,
+            prior_30_june_total_super_balance=person.carry_forward_previous_30_june_total_super_balance,
+            unused_concessional_cap_amounts=person.unused_concessional_cap_amounts,
+            financial_year_start_year=current_financial_year_start_year,
             as_of_date=inputs.as_of_date,
         )
         warnings.extend(f"{person.label}: {warning}" for warning in current_contribution_summary["warnings"])
@@ -458,8 +489,15 @@ def project_retirement(inputs: RetirementInputs) -> RetirementProjection:
     warnings = _dedupe_warnings(warnings)
 
     balances = {person.label: float(person.current_super_balance) for person in people}
+    carry_forward_unused_cap_state_by_person = {
+        person.label: person.unused_concessional_cap_amounts for person in people
+    }
+    carry_forward_prior_balance_by_person = {
+        person.label: person.carry_forward_previous_30_june_total_super_balance for person in people
+    }
     retirement_balance_by_person: dict[str, float] = {}
     cash_reserve_balance = 0.0
+    financial_asset_balance = float(inputs.retirement_financial_assets)
     inheritance_applied = False
 
     accumulation_rows: list[dict[str, object]] = []
@@ -476,6 +514,7 @@ def project_retirement(inputs: RetirementInputs) -> RetirementProjection:
 
     for year_offset in range(final_year_offset + 1):
         calendar_year = int(inputs.as_of_date.year + year_offset)
+        financial_year_start_year = current_financial_year_start_year + year_offset
         ages = {person.label: current_ages[person.label] + year_offset for person in people}
         start_balances = {label: float(balance) for label, balance in balances.items()}
         inheritance_received_this_year = 0.0
@@ -547,6 +586,10 @@ def project_retirement(inputs: RetirementInputs) -> RetirementProjection:
                     employer_super_rate=float(person.employer_super_rate),
                     annual_salary_sacrifice=float(person.annual_salary_sacrifice),
                     annual_after_tax_contribution=float(person.annual_after_tax_contribution),
+                    employer_super_annual_amount_override=person.employer_super_annual_amount_override,
+                    prior_30_june_total_super_balance=carry_forward_prior_balance_by_person[person.label],
+                    unused_concessional_cap_amounts=carry_forward_unused_cap_state_by_person[person.label],
+                    financial_year_start_year=financial_year_start_year,
                     as_of_date=inputs.as_of_date,
                 )
                 net_contribution = float(contribution_summary["net_contribution"])
@@ -576,6 +619,12 @@ def project_retirement(inputs: RetirementInputs) -> RetirementProjection:
                 else float(inputs.annual_return_pre)
             )
             balance_after_return = max(balance_after_contributions * (1.0 + return_rate), 0.0)
+
+            if year_offset < retirement_offset:
+                carry_forward_unused_cap_state_by_person[person.label] = contribution_summary[
+                    "next_unused_concessional_cap_amounts"
+                ]
+                carry_forward_prior_balance_by_person[person.label] = balance_after_return
 
             person_year_data[person.label] = {
                 "age": age,
@@ -647,7 +696,7 @@ def project_retirement(inputs: RetirementInputs) -> RetirementProjection:
                 relationship_status=inputs.relationship_status,
                 homeowner_status=inputs.homeowner_status,
                 assessable_super_balance=household_start_super_assessable,
-                retirement_financial_assets=float(inputs.retirement_financial_assets) + cash_reserve_balance,
+                retirement_financial_assets=financial_asset_balance + cash_reserve_balance,
                 retirement_other_assessable_assets=float(inputs.retirement_other_assessable_assets),
                 annual_other_assessable_income=total_taxable_income,
                 as_of_date=inputs.as_of_date,
@@ -660,13 +709,17 @@ def project_retirement(inputs: RetirementInputs) -> RetirementProjection:
                 "eligible_person_count": 0,
                 "annual_pension": 0.0,
                 "fortnightly_pension": 0.0,
+                "full_pension_annual": 0.0,
+                "full_couple_pension_annual": (0.0 if inputs.relationship_status == "couple" else None),
+                "is_full_pension": False,
+                "is_full_couple_pension": False,
                 "income_test_rate_fortnight": 0.0,
                 "assets_test_rate_fortnight": 0.0,
                 "deemed_income_annual": 0.0,
                 "total_assessable_income_annual": _round_currency(total_taxable_income),
                 "assessable_assets": _round_currency(
                     household_start_super_assessable
-                    + float(inputs.retirement_financial_assets)
+                    + financial_asset_balance
                     + cash_reserve_balance
                     + float(inputs.retirement_other_assessable_assets)
                 ),
@@ -679,13 +732,21 @@ def project_retirement(inputs: RetirementInputs) -> RetirementProjection:
             if year_offset >= first_retirement_year_offset
             else 0.0
         )
+        spending_gap_before_reserve = _positive_currency_gap(
+            spending_need - total_net_after_tax_income - annual_age_pension
+        )
         cash_reserve_used = min(
             cash_reserve_balance,
-            max(spending_need - total_net_after_tax_income - annual_age_pension, 0.0),
+            spending_gap_before_reserve,
         )
-        draw_needed_after_income_and_reserve = max(
-            spending_need - total_net_after_tax_income - annual_age_pension - cash_reserve_used,
-            0.0,
+        draw_needed_after_income_and_reserve = _positive_currency_gap(
+            spending_gap_before_reserve - cash_reserve_used,
+        )
+        financial_assets_used = 0.0
+        if inputs.use_financial_assets_for_spending:
+            financial_assets_used = min(financial_asset_balance, draw_needed_after_income_and_reserve)
+        draw_needed_after_income_reserve_and_financial_assets = _positive_currency_gap(
+            draw_needed_after_income_and_reserve - financial_assets_used,
         )
 
         minimum_draw_by_person: dict[str, float] = {}
@@ -712,7 +773,7 @@ def project_retirement(inputs: RetirementInputs) -> RetirementProjection:
 
         total_minimum_draw = sum(minimum_draw_by_person.values())
         draw_by_person = _allocate_additional_draw(
-            target_total_draw=max(draw_needed_after_income_and_reserve, total_minimum_draw),
+            target_total_draw=max(draw_needed_after_income_reserve_and_financial_assets, total_minimum_draw),
             minimum_draw_by_person=minimum_draw_by_person,
             maximum_draw_by_person=maximum_draw_by_person,
         )
@@ -730,16 +791,27 @@ def project_retirement(inputs: RetirementInputs) -> RetirementProjection:
             )
             person_year_data[label]["end_balance"] = balances[label]
 
-        excess_pension_cash_to_reserve = max(actual_super_draw - draw_needed_after_income_and_reserve, 0.0)
+        financial_asset_balance = max(financial_asset_balance - financial_assets_used, 0.0)
+        excess_pension_cash_to_reserve = _positive_currency_gap(
+            actual_super_draw - draw_needed_after_income_reserve_and_financial_assets
+        )
         cash_reserve_balance = max(cash_reserve_balance - cash_reserve_used, 0.0) + excess_pension_cash_to_reserve
 
         available_cash_for_spending = min(
             spending_need,
-            total_net_after_tax_income + annual_age_pension + cash_reserve_used + actual_super_draw,
+            total_net_after_tax_income
+            + annual_age_pension
+            + cash_reserve_used
+            + financial_assets_used
+            + actual_super_draw,
         )
-        spending_shortfall = max(
-            spending_need - total_net_after_tax_income - annual_age_pension - cash_reserve_used - actual_super_draw,
-            0.0,
+        spending_shortfall = _positive_currency_gap(
+            spending_need
+            - total_net_after_tax_income
+            - annual_age_pension
+            - cash_reserve_used
+            - financial_assets_used
+            - actual_super_draw
         )
         household_end_super = sum(balances.values())
 
@@ -762,13 +834,18 @@ def project_retirement(inputs: RetirementInputs) -> RetirementProjection:
             "Age Pension ($/yr)": _round_currency(annual_age_pension),
             "Spending need ($/yr)": _round_currency(spending_need),
             "Cash reserve used ($/yr)": _round_currency(cash_reserve_used),
-            "Net household draw ($/yr)": _round_currency(draw_needed_after_income_and_reserve),
+            "Financial assets outside super at start ($)": _round_currency(
+                financial_asset_balance + financial_assets_used
+            ),
+            "Financial assets draw used ($/yr)": _round_currency(financial_assets_used),
+            "Net household draw ($/yr)": _round_currency(draw_needed_after_income_reserve_and_financial_assets),
             "Minimum pension draw required ($/yr)": _round_currency(total_minimum_draw),
             "Actual super draw ($/yr)": _round_currency(actual_super_draw),
             "Excess pension cash to reserve ($/yr)": _round_currency(excess_pension_cash_to_reserve),
             "Available cash for spending ($/yr)": _round_currency(available_cash_for_spending),
             "Spending shortfall ($/yr)": _round_currency(spending_shortfall),
             "Cash reserve balance ($)": _round_currency(cash_reserve_balance),
+            "Financial assets outside super at end ($)": _round_currency(financial_asset_balance),
             "Household end super ($)": _round_currency(household_end_super),
             "Real household end super ($, today's dollars)": _round_currency(
                 household_end_super / ((1.0 + float(inputs.inflation_rate)) ** year_offset)
@@ -811,6 +888,14 @@ def project_retirement(inputs: RetirementInputs) -> RetirementProjection:
             "Year": year_offset,
             "Calendar year": calendar_year,
             "Estimated Age Pension ($/yr)": _round_currency(annual_age_pension),
+            "Full Age Pension benchmark ($/yr)": _round_currency(age_pension_result["full_pension_annual"]),
+            "Full couple Age Pension benchmark ($/yr)": (
+                _round_currency(age_pension_result["full_couple_pension_annual"])
+                if age_pension_result["full_couple_pension_annual"] is not None
+                else None
+            ),
+            "At full Age Pension": bool(age_pension_result["is_full_pension"]),
+            "At full couple Age Pension": bool(age_pension_result["is_full_couple_pension"]),
             "Eligible people": int(age_pension_result["eligible_person_count"]),
             "Binding test": str(age_pension_result["binding_test"]),
             "Inheritance received ($/yr)": _round_currency(inheritance_received_this_year),
@@ -821,7 +906,11 @@ def project_retirement(inputs: RetirementInputs) -> RetirementProjection:
             "Assessable super ($)": _round_currency(household_start_super_assessable),
             "Exempt super ($)": _round_currency(household_start_super_exempt),
             "Cash reserve counted as financial asset ($)": _round_currency(cash_reserve_balance),
-            "Base financial assets outside super ($)": _round_currency(inputs.retirement_financial_assets),
+            "Base financial assets outside super ($)": _round_currency(
+                financial_asset_balance + financial_assets_used
+            ),
+            "Financial assets draw used ($/yr)": _round_currency(financial_assets_used),
+            "Financial assets outside super at end ($)": _round_currency(financial_asset_balance),
             "Other assessable assets ($)": _round_currency(inputs.retirement_other_assessable_assets),
             "Assessable assets ($)": _round_currency(age_pension_result["assessable_assets"]),
         }
@@ -844,7 +933,7 @@ def project_retirement(inputs: RetirementInputs) -> RetirementProjection:
     final_household_super = sum(balances.values())
     final_total_resources = (
         final_household_super
-        + float(inputs.retirement_financial_assets)
+        + financial_asset_balance
         + float(inputs.retirement_other_assessable_assets)
         + cash_reserve_balance
     )
@@ -977,6 +1066,11 @@ def project_retirement(inputs: RetirementInputs) -> RetirementProjection:
             if first_cashflow_row is not None
             else 0.0
         ),
+        "first_year_financial_assets_draw": _round_currency(
+            float(first_cashflow_row["Financial assets draw used ($/yr)"])
+            if first_cashflow_row is not None
+            else 0.0
+        ),
         "first_year_estimated_personal_tax": _round_currency(
             float(first_cashflow_row["Estimated personal tax ($/yr)"]) if first_cashflow_row is not None else 0.0
         ),
@@ -987,6 +1081,7 @@ def project_retirement(inputs: RetirementInputs) -> RetirementProjection:
             float(first_cashflow_row["Age Pension ($/yr)"]) if first_cashflow_row is not None else 0.0
         ),
         "final_household_super": _round_currency(final_household_super),
+        "final_financial_assets_balance": _round_currency(financial_asset_balance),
         "final_cash_reserve_balance": _round_currency(cash_reserve_balance),
         "final_total_resources": _round_currency(final_total_resources),
         "estate_gap": _round_currency(max(float(inputs.target_estate) - final_total_resources, 0.0)),
@@ -1051,7 +1146,12 @@ def estimate_required_annual_salary_sacrifice(inputs: RetirementInputs) -> float
             upper = midpoint
         else:
             lower = midpoint
-    return _round_currency(best)
+    rounded_best = _round_currency_up(best)
+    while rounded_best <= _MAX_SEARCH_SALARY_SACRIFICE and not _meets_target(
+        project_retirement(_build_household_salary_sacrifice_inputs(inputs, rounded_best))
+    ):
+        rounded_best = _round_currency_up(rounded_best + 0.01)
+    return _round_currency(rounded_best)
 
 
 def estimate_required_annual_contribution(inputs: RetirementInputs) -> float | None:
@@ -1073,4 +1173,9 @@ def estimate_max_sustainable_spending(inputs: RetirementInputs) -> float:
             lower = midpoint
         else:
             upper = midpoint
-    return _round_currency(best)
+    rounded_best = _round_currency_down(best)
+    while rounded_best > 0.0 and not _meets_target(
+        project_retirement(replace(inputs, annual_retirement_spending=rounded_best))
+    ):
+        rounded_best = _round_currency_down(rounded_best - 0.01)
+    return _round_currency(rounded_best)
