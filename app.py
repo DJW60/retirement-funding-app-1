@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import date
 
+import altair as alt
 import pandas as pd
 import streamlit as st
 
@@ -11,9 +12,9 @@ from retirement_app.calculations import (
     project_retirement,
 )
 from retirement_app.formatting import format_age, format_currency, format_percentage
-from retirement_app.models import CashInheritanceEvent, PersonProfile, RetirementInputs
+from retirement_app.models import CashInheritanceEvent, PersonProfile, RetirementInputs, UnusedConcessionalCapAmount
 from retirement_app.rules_loader import get_rule_metadata
-from retirement_app.superannuation import calculate_age
+from retirement_app.superannuation import calculate_age, get_previous_carry_forward_financial_year_labels
 
 
 st.set_page_config(
@@ -54,11 +55,93 @@ def _build_retirement_cashflow_chart_df(retirement_df: pd.DataFrame) -> pd.DataF
     ]
 
 
-def _build_age_pension_chart_df(age_pension_df: pd.DataFrame) -> pd.DataFrame:
+def _build_age_pension_chart(
+    age_pension_df: pd.DataFrame,
+    *,
+    relationship_status: str,
+) -> tuple[alt.Chart | None, pd.Series | None]:
     chart_df = age_pension_df.copy()
     if chart_df.empty:
-        return chart_df
-    return chart_df.set_index("Calendar year")[["Estimated Age Pension ($/yr)"]]
+        return None, None
+
+    benchmark_column = (
+        "Full couple Age Pension benchmark ($/yr)"
+        if relationship_status == "couple"
+        else "Full Age Pension benchmark ($/yr)"
+    )
+    status_column = "At full couple Age Pension" if relationship_status == "couple" else "At full Age Pension"
+    benchmark_label = "Full couple pension benchmark" if relationship_status == "couple" else "Full pension benchmark"
+
+    chart_source = pd.DataFrame(
+        {
+            "Calendar year": chart_df["Calendar year"],
+            "Estimated Age Pension": chart_df["Estimated Age Pension ($/yr)"],
+            benchmark_label: chart_df[benchmark_column],
+        }
+    )
+    long_df = chart_source.melt(
+        id_vars=["Calendar year"],
+        var_name="Series",
+        value_name="Amount ($/yr)",
+    ).dropna(subset=["Amount ($/yr)"])
+
+    series_order = ["Estimated Age Pension", benchmark_label]
+    base = alt.Chart(long_df).encode(
+        x=alt.X("Calendar year:Q", title="Calendar year", axis=alt.Axis(format="d")),
+        y=alt.Y("Amount ($/yr):Q", title="Annual pension ($)", scale=alt.Scale(zero=True)),
+        color=alt.Color(
+            "Series:N",
+            title=None,
+            sort=series_order,
+            scale=alt.Scale(
+                domain=series_order,
+                range=["#1d4ed8", "#b7791f"],
+            ),
+        ),
+        strokeDash=alt.StrokeDash(
+            "Series:N",
+            title=None,
+            sort=series_order,
+            scale=alt.Scale(
+                domain=series_order,
+                range=[[1, 0], [8, 6]],
+            ),
+        ),
+        tooltip=[
+            alt.Tooltip("Calendar year:Q", format=".0f"),
+            alt.Tooltip("Series:N"),
+            alt.Tooltip("Amount ($/yr):Q", format=",.0f"),
+        ],
+    )
+    chart: alt.Chart = base.mark_line(strokeWidth=3)
+
+    full_rows = chart_df.loc[chart_df[status_column] == True]
+    first_full_row = full_rows.iloc[0] if not full_rows.empty else None
+    if first_full_row is not None:
+        marker_df = pd.DataFrame(
+            {
+                "Calendar year": [first_full_row["Calendar year"]],
+                "Amount ($/yr)": [first_full_row["Estimated Age Pension ($/yr)"]],
+                "Label": [
+                    "Full couple pension reached" if relationship_status == "couple" else "Full pension reached"
+                ],
+            }
+        )
+        rule = alt.Chart(marker_df).mark_rule(color="#2d6a4f", strokeDash=[6, 4]).encode(
+            x=alt.X("Calendar year:Q")
+        )
+        point = alt.Chart(marker_df).mark_point(color="#2d6a4f", filled=True, size=110).encode(
+            x=alt.X("Calendar year:Q"),
+            y=alt.Y("Amount ($/yr):Q"),
+        )
+        text = alt.Chart(marker_df).mark_text(color="#2d6a4f", align="left", dx=6, dy=-10).encode(
+            x=alt.X("Calendar year:Q"),
+            y=alt.Y("Amount ($/yr):Q"),
+            text="Label:N",
+        )
+        chart = alt.layer(chart, rule, point, text)
+
+    return chart.properties(height=320), first_full_row
 
 
 def _display_rule_card(title: str, entries: list[str]) -> None:
@@ -91,9 +174,87 @@ def _format_inheritance_timing(value: str) -> str:
     return "Person 1 age"
 
 
+def _build_carry_forward_input_section(
+    *,
+    person_label: str,
+    default_total_super_balance: float,
+    as_of_date: date,
+    key_prefix: str,
+    default_enabled: bool = False,
+    default_unused_cap_amounts: dict[str, float] | None = None,
+) -> tuple[float | None, tuple[UnusedConcessionalCapAmount, ...]]:
+    available_year_labels = get_previous_carry_forward_financial_year_labels(as_of_date)
+    default_unused_cap_amounts = default_unused_cap_amounts or {}
+
+    with st.expander(f"{person_label} carry-forward concessional caps", expanded=default_enabled):
+        enabled = st.checkbox(
+            f"Use carry-forward concessional cap inputs for {person_label}",
+            value=default_enabled,
+            key=f"{key_prefix}_carry_forward_enabled",
+            help=(
+                "Enter the previous 30 June total super balance and any unused concessional cap amounts "
+                "you want the planner to apply. Oldest amounts are used first."
+            ),
+        )
+        if not enabled:
+            st.caption(
+                "Leave this off to use the standard concessional cap only. Turn it on only when you want the "
+                "planner to use your prior 30 June total super balance and unused cap history."
+            )
+            return None, ()
+
+        prior_total_super_balance = st.number_input(
+            f"{person_label} total super balance at previous 30 June ($)",
+            min_value=0.0,
+            value=float(default_total_super_balance),
+            step=1000.0,
+            format="%.0f",
+            key=f"{key_prefix}_prior_total_super_balance",
+            help=(
+                "Use the actual total super balance at the previous 30 June across all relevant interests. "
+                "Under current rules, carry-forward amounts are only applied if this was below $500,000."
+            ),
+        )
+
+        unused_cap_amounts: list[UnusedConcessionalCapAmount] = []
+        if available_year_labels:
+            st.caption(
+                "Enter unused concessional cap amounts for the available carry-forward years: "
+                + ", ".join(available_year_labels)
+                + "."
+            )
+        for year_label in available_year_labels:
+            amount = st.number_input(
+                f"{person_label} unused concessional cap from {year_label} ($)",
+                min_value=0.0,
+                value=float(default_unused_cap_amounts.get(year_label, 0.0)),
+                step=1000.0,
+                format="%.0f",
+                key=f"{key_prefix}_unused_cap_{year_label}",
+            )
+            if float(amount) > 0.0:
+                unused_cap_amounts.append(
+                    UnusedConcessionalCapAmount(financial_year=year_label, amount=float(amount))
+                )
+
+        total_unused_cap = sum(float(entry.amount) for entry in unused_cap_amounts)
+        st.caption(
+            f"Entered carry-forward amount: {format_currency(total_unused_cap)}. "
+            "The planner applies these amounts oldest first if the prior 30 June balance test is met."
+        )
+        return float(prior_total_super_balance), tuple(unused_cap_amounts)
+
+
 today = date.today()
-default_birth_date_person_1 = date(today.year - 45, 6, 30)
-default_birth_date_person_2 = date(today.year - 42, 6, 30)
+default_birth_date_person_1 = date(1960, 11, 30)
+default_birth_date_person_2 = date(1964, 1, 30)
+default_person_1_unused_concessional_cap_amounts = {
+    "2020-21": 18232.0,
+    "2021-22": 19875.0,
+    "2022-23": 13647.0,
+    "2023-24": 300.0,
+    "2024-25": 0.0,
+}
 
 st.title("Australian Retirement Funding Planner")
 st.caption(
@@ -106,6 +267,7 @@ with st.sidebar:
     relationship_status = st.radio(
         "Household mode",
         options=["single", "couple"],
+        index=1,
         format_func=lambda value: "Single" if value == "single" else "Couple",
         horizontal=True,
     )
@@ -130,7 +292,7 @@ with st.sidebar:
         "Person 1 retirement age",
         min_value=max(int(current_age_1), 18),
         max_value=95,
-        value=max(int(current_age_1) + 20, 67),
+        value=max(int(current_age_1), 67),
         step=1,
     )
     planning_age_1 = st.number_input(
@@ -143,24 +305,24 @@ with st.sidebar:
     current_super_balance_1 = st.number_input(
         "Person 1 current super balance ($)",
         min_value=0.0,
-        value=350000.0,
+        value=120000.0,
         step=10000.0,
         format="%.0f",
     )
     annual_salary_1 = st.number_input(
         "Person 1 current salary ($/yr)",
         min_value=0.0,
-        value=120000.0,
+        value=82000.0,
         step=5000.0,
         format="%.0f",
     )
     annual_non_salary_income_1 = st.number_input(
-        "Person 1 other non-salary income ($/yr)",
+        "Person 1 gross taxable non-salary income ($/yr)",
         min_value=0.0,
         value=0.0,
         step=2500.0,
         format="%.0f",
-        help="Examples: rental income, trust distributions, consulting income, dividends, or annuity income attributable to this person.",
+        help="Enter gross taxable income only. Do not enter after-tax cashflow here. If the income comes from financial assets outside super entered below, usually leave this at 0 unless you want to model a separate taxable income stream.",
     )
     super_product_type_1 = st.selectbox(
         "Person 1 super product / access mode",
@@ -176,17 +338,40 @@ with st.sidebar:
         value=3.0,
         step=0.25,
     )
+    use_fixed_employer_contribution_1 = st.checkbox(
+        "Use fixed employer contribution for Person 1",
+        value=True,
+        help=(
+            "If selected, this annual dollar amount fully overrides the percentage-based employer super contribution "
+            "for Person 1."
+        ),
+    )
     employer_super_rate_1 = st.slider(
         "Person 1 employer super rate (% of salary)",
         min_value=0.0,
         max_value=20.0,
         value=12.0,
         step=0.25,
+        disabled=use_fixed_employer_contribution_1,
     )
+    employer_super_annual_amount_override_1 = None
+    if use_fixed_employer_contribution_1:
+        employer_super_annual_amount_override_1 = st.number_input(
+            "Person 1 fixed employer contribution ($/yr)",
+            min_value=0.0,
+            value=20962.0,
+            step=1000.0,
+            format="%.0f",
+            help="This is the full employer contribution used for Person 1. No extra SG-style percentage amount is added on top.",
+        )
+        st.caption(
+            "The fixed annual amount is now authoritative for Person 1. The percentage-based employer super rate "
+            "is disabled and contributes $0 while this option is selected."
+        )
     annual_salary_sacrifice_1 = st.number_input(
         "Person 1 before-tax contribution ($/yr)",
         min_value=0.0,
-        value=10000.0,
+        value=27270.0,
         step=1000.0,
         format="%.0f",
     )
@@ -197,8 +382,21 @@ with st.sidebar:
         step=1000.0,
         format="%.0f",
     )
+    (
+        carry_forward_previous_30_june_total_super_balance_1,
+        unused_concessional_cap_amounts_1,
+    ) = _build_carry_forward_input_section(
+        person_label="Person 1",
+        default_total_super_balance=float(current_super_balance_1),
+        as_of_date=today,
+        key_prefix="person_1",
+        default_enabled=True,
+        default_unused_cap_amounts=default_person_1_unused_concessional_cap_amounts,
+    )
 
     partner_person: PersonProfile | None = None
+    carry_forward_previous_30_june_total_super_balance_2: float | None = None
+    unused_concessional_cap_amounts_2: tuple[UnusedConcessionalCapAmount, ...] = ()
     if relationship_status == "couple":
         st.markdown("### Person 2")
         birth_date_2 = st.date_input(
@@ -213,7 +411,7 @@ with st.sidebar:
             "Person 2 retirement age",
             min_value=max(int(current_age_2), 18),
             max_value=95,
-            value=max(int(current_age_2) + 20, 67),
+            value=max(int(current_age_2), 64),
             step=1,
         )
         planning_age_2 = st.number_input(
@@ -226,23 +424,24 @@ with st.sidebar:
         current_super_balance_2 = st.number_input(
             "Person 2 current super balance ($)",
             min_value=0.0,
-            value=250000.0,
+            value=440000.0,
             step=10000.0,
             format="%.0f",
         )
         annual_salary_2 = st.number_input(
             "Person 2 current salary ($/yr)",
             min_value=0.0,
-            value=80000.0,
+            value=0.0,
             step=5000.0,
             format="%.0f",
         )
         annual_non_salary_income_2 = st.number_input(
-            "Person 2 other non-salary income ($/yr)",
+            "Person 2 gross taxable non-salary income ($/yr)",
             min_value=0.0,
             value=0.0,
             step=2500.0,
             format="%.0f",
+            help="Enter gross taxable income only. Do not enter after-tax cashflow here. If the income comes from financial assets outside super entered below, usually leave this at 0 unless you want to model a separate taxable income stream.",
         )
         super_product_type_2 = st.selectbox(
             "Person 2 super product / access mode",
@@ -268,16 +467,25 @@ with st.sidebar:
         annual_salary_sacrifice_2 = st.number_input(
             "Person 2 before-tax contribution ($/yr)",
             min_value=0.0,
-            value=5000.0,
+            value=0.0,
             step=1000.0,
             format="%.0f",
         )
         annual_after_tax_contribution_2 = st.number_input(
             "Person 2 after-tax contribution ($/yr)",
             min_value=0.0,
-            value=0.0,
+            value=3000.0,
             step=1000.0,
             format="%.0f",
+        )
+        (
+            carry_forward_previous_30_june_total_super_balance_2,
+            unused_concessional_cap_amounts_2,
+        ) = _build_carry_forward_input_section(
+            person_label="Person 2",
+            default_total_super_balance=float(current_super_balance_2),
+            as_of_date=today,
+            key_prefix="person_2",
         )
 
         partner_person = PersonProfile(
@@ -293,24 +501,26 @@ with st.sidebar:
             employer_super_rate=float(employer_super_rate_2) / 100.0,
             annual_salary_sacrifice=float(annual_salary_sacrifice_2),
             annual_after_tax_contribution=float(annual_after_tax_contribution_2),
+            carry_forward_previous_30_june_total_super_balance=carry_forward_previous_30_june_total_super_balance_2,
+            unused_concessional_cap_amounts=unused_concessional_cap_amounts_2,
         )
 
     st.markdown("### Household retirement funding")
     annual_retirement_spending = st.number_input(
         "Household retirement spending target ($/yr)",
         min_value=0.0,
-        value=80000.0 if relationship_status == "single" else 110000.0,
+        value=80000.0 if relationship_status == "single" else 85000.0,
         step=2500.0,
         format="%.0f",
         help="This version applies the spending target from the first selected retirement year, not only after both people have fully retired.",
     )
     annual_other_income = st.number_input(
-        "Shared household other income before Age Pension ($/yr)",
+        "Shared household gross taxable income before Age Pension ($/yr)",
         min_value=0.0,
-        value=12000.0,
+        value=0.0,
         step=2500.0,
         format="%.0f",
-        help="Income that belongs to the household rather than specifically to Person 1 or Person 2.",
+        help="Enter gross taxable household income only. Do not enter after-tax cashflow here. If the income comes from financial assets outside super entered below, usually leave this at 0 unless you want to model a separate taxable income stream.",
     )
     annual_other_income_growth = st.slider(
         "Other income growth (%/yr)",
@@ -323,14 +533,20 @@ with st.sidebar:
     retirement_financial_assets = st.number_input(
         "Financial assets outside super at retirement ($)",
         min_value=0.0,
-        value=50000.0,
+        value=100000.0,
         step=5000.0,
         format="%.0f",
+        help="Examples: cash, term deposits, shares, ETFs, managed funds, or offset cash held outside super. The Age Pension estimate uses deeming on this balance.",
+    )
+    use_financial_assets_for_spending = st.checkbox(
+        "Use financial assets outside super to help fund retirement spending",
+        value=True,
+        help="If selected, this balance is drawn down before extra super draw. The Age Pension estimate still applies deeming to the remaining balance. This does not separately model actual dividend or interest yield from the same assets.",
     )
     retirement_other_assessable_assets = st.number_input(
         "Other assessable assets at retirement ($)",
         min_value=0.0,
-        value=20000.0,
+        value=70000.0,
         step=5000.0,
         format="%.0f",
     )
@@ -435,9 +651,12 @@ primary_person = PersonProfile(
     annual_non_salary_income=float(annual_non_salary_income_1),
     super_product_type=super_product_type_1,
     annual_salary_growth=float(annual_salary_growth_1) / 100.0,
-    employer_super_rate=float(employer_super_rate_1) / 100.0,
+    employer_super_rate=(0.0 if use_fixed_employer_contribution_1 else float(employer_super_rate_1) / 100.0),
     annual_salary_sacrifice=float(annual_salary_sacrifice_1),
     annual_after_tax_contribution=float(annual_after_tax_contribution_1),
+    employer_super_annual_amount_override=employer_super_annual_amount_override_1,
+    carry_forward_previous_30_june_total_super_balance=carry_forward_previous_30_june_total_super_balance_1,
+    unused_concessional_cap_amounts=unused_concessional_cap_amounts_1,
 )
 
 inputs = RetirementInputs(
@@ -454,6 +673,7 @@ inputs = RetirementInputs(
     annual_return_pre=float(annual_return_pre) / 100.0,
     annual_return_post=float(annual_return_post) / 100.0,
     inflation_rate=float(inflation_rate) / 100.0,
+    use_financial_assets_for_spending=bool(use_financial_assets_for_spending),
     cash_inheritance_event=cash_inheritance_event,
     target_estate=float(target_estate),
     as_of_date=today,
@@ -548,9 +768,11 @@ m12.metric("First-year cash reserve", format_currency(summary["first_year_cash_r
 st.caption(
     "This version supports separate ages, salaries, super balances, and retirement ages for two people. "
     "Cashflow can start before selected retirement if a TRIS is chosen and preservation age is reached, and any ongoing work income is converted to a simple after-tax estimate using resident tax brackets, LITO, and a flat Medicare levy. "
-    "Person-level non-salary income can also be entered for each person, and each person can now be modelled as accumulation, account-based pension, or TRIS with age-based minimum pension rules and a simple cash reserve for excess mandatory drawdowns. "
+    "Person-level and shared non-salary income inputs are treated as gross taxable income, and each person can now be modelled as accumulation, account-based pension, or TRIS with age-based minimum pension rules and a simple cash reserve for excess mandatory drawdowns. "
+    "Financial assets outside super can also be used to help fund retirement spending, while the Age Pension estimate continues to apply deeming to the remaining balance. "
     "A one-off cash inheritance or windfall can also be added to that reserve. "
-    "It does not yet model SAPTO, Medicare levy reductions, HELP, MLS, first-year pension pro-rating, detailed pension-payment tax, carry-forward concessional caps, bring-forward rules, inherited property or shares, super death benefits, or general active drawdown of non-super assets."
+    "Carry-forward concessional caps can now be entered using the prior 30 June total super balance and unused cap history, but the cap check is still approximate because the projection runs in annual steps rather than exact payroll or financial-year timing. "
+    "It does not yet model SAPTO, Medicare levy reductions, HELP, MLS, first-year pension pro-rating, detailed pension-payment tax, bring-forward rules, inherited property or shares, super death benefits, or a separate taxable yield model for those outside-super financial assets."
 )
 
 full_balance_df = pd.concat(
@@ -621,6 +843,7 @@ with tab1:
     st.markdown(
         f"The model estimates a first cashflow-year spending gap of **{format_currency(summary['first_year_net_draw'])}**, "
         f"first-year net non-pension income after estimated tax of **{format_currency(summary['first_year_net_income_after_tax'])}**, "
+        f"first-year draw from financial assets outside super of **{format_currency(summary['first_year_financial_assets_draw'])}**, "
         f"first-year estimated personal tax of **{format_currency(summary['first_year_estimated_personal_tax'])}**, "
         f"a minimum pension draw of **{format_currency(summary['first_year_minimum_pension_draw'])}**, "
         f"an actual super draw of **{format_currency(summary['first_year_actual_super_draw'])}**, "
@@ -644,6 +867,7 @@ with tab1:
                 f"Financial year: {super_snapshot['financial_year']}",
                 f"SG rate: {format_percentage(super_snapshot['super_guarantee_rate'])}",
                 f"Concessional cap: {format_currency(super_snapshot['concessional_cap'])}",
+                f"Carry-forward TSB limit: {format_currency(super_snapshot['carry_forward_balance_limit'])}",
                 f"Non-concessional cap: {format_currency(super_snapshot['non_concessional_cap'])}",
                 f"Contributions tax: {format_percentage(super_snapshot['contributions_tax_rate'])}",
                 f"Transfer balance cap: {format_currency(super_snapshot['general_transfer_balance_cap'])}",
@@ -691,8 +915,24 @@ with tab3:
 
 with tab4:
     st.markdown("#### Age Pension estimate")
-    st.line_chart(_build_age_pension_chart_df(projection.age_pension_df), use_container_width=True)
+    age_pension_chart, first_full_pension_row = _build_age_pension_chart(
+        projection.age_pension_df,
+        relationship_status=inputs.relationship_status,
+    )
+    if age_pension_chart is not None:
+        st.altair_chart(age_pension_chart, use_container_width=True)
     st.dataframe(projection.age_pension_df, use_container_width=True, hide_index=True)
+    if first_full_pension_row is not None:
+        st.caption(
+            f"First {'full couple Age Pension' if inputs.relationship_status == 'couple' else 'full Age Pension'} "
+            f"appears around {_format_age_pair(first_full_pension_row['Person 1 age'], first_full_pension_row.get('Person 2 age'))} "
+            f"in calendar year {int(first_full_pension_row['Calendar year'])}."
+        )
+    else:
+        st.caption(
+            f"This projection does not reach {'full couple Age Pension' if inputs.relationship_status == 'couple' else 'full Age Pension'} "
+            "under the current assumptions."
+        )
     st.caption(
         "Under Age Pension age, accumulation super is shown as exempt, while account-based pension and TRIS settings are shown as assessed. "
         "This is still a standard-rule estimate and does not yet cover Work Bonus, Rent Assistance, transitional rates, or more complex income-stream cases."
@@ -736,6 +976,6 @@ with tab5:
             "1. Add SAPTO, Medicare levy reductions, HELP, and Medicare levy surcharge to improve after-tax cashflow realism.\n"
             "2. Add compare-mode scenarios so different inheritance timings and amounts can be tested side by side.\n"
             "3. Split Age Pension treatment further for under-age income streams and more special-case Centrelink rules.\n"
-            "4. Add carry-forward concessional caps, bring-forward non-concessional rules, and downsizer contributions.\n"
+            "4. Add bring-forward non-concessional rules, downsizer contributions, and more exact contribution timing.\n"
             "5. Add scenario save/load and downloadable reports."
         )
