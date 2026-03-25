@@ -190,6 +190,54 @@ def _state_option_index(key: str, options: list[str], default: str) -> int:
     return options.index(value) if value in options else options.index(default)
 
 
+def _ensure_state_option(key: str, options: list[str], default: str) -> None:
+    value = str(_state_value(key, default))
+    if value not in options:
+        st.session_state[key] = default
+
+
+def _ensure_state_number(
+    key: str,
+    default: float | int,
+    *,
+    min_value: float | int | None = None,
+    max_value: float | int | None = None,
+    integer: bool = False,
+) -> None:
+    raw_value = _state_value(key, default)
+    try:
+        value = int(raw_value) if integer else float(raw_value)
+    except (TypeError, ValueError):
+        value = int(default) if integer else float(default)
+    if min_value is not None:
+        value = max(value, int(min_value) if integer else float(min_value))
+    if max_value is not None:
+        value = min(value, int(max_value) if integer else float(max_value))
+    st.session_state[key] = int(value) if integer else float(value)
+
+
+def _ensure_state_date(
+    key: str,
+    default: date,
+    *,
+    min_value: date | None = None,
+    max_value: date | None = None,
+) -> None:
+    raw_value = _state_value(key, default)
+    if isinstance(raw_value, date):
+        value = raw_value
+    else:
+        try:
+            value = date.fromisoformat(str(raw_value))
+        except ValueError:
+            value = default
+    if min_value is not None and value < min_value:
+        value = min_value
+    if max_value is not None and value > max_value:
+        value = max_value
+    st.session_state[key] = value
+
+
 def _default_input_state(as_of_date: date) -> dict[str, object]:
     defaults: dict[str, object] = {
         "benchmark_case_selector": "",
@@ -343,9 +391,9 @@ def _build_carry_forward_input_section(
         f"{person_label} carry-forward concessional caps",
         expanded=bool(_state_value(f"{key_prefix}_carry_forward_enabled", default_enabled)),
     ):
+        _ensure_state_number(f"{key_prefix}_prior_total_super_balance", default_total_super_balance, min_value=0.0)
         enabled = st.checkbox(
             f"Use carry-forward concessional cap inputs for {person_label}",
-            value=bool(_state_value(f"{key_prefix}_carry_forward_enabled", default_enabled)),
             key=f"{key_prefix}_carry_forward_enabled",
             help=(
                 "Enter the previous 30 June total super balance and any unused concessional cap amounts "
@@ -362,7 +410,6 @@ def _build_carry_forward_input_section(
         prior_total_super_balance = st.number_input(
             f"{person_label} total super balance at previous 30 June ($)",
             min_value=0.0,
-            value=float(_state_value(f"{key_prefix}_prior_total_super_balance", default_total_super_balance)),
             step=1000.0,
             format="%.0f",
             key=f"{key_prefix}_prior_total_super_balance",
@@ -383,7 +430,6 @@ def _build_carry_forward_input_section(
             amount = st.number_input(
                 f"{person_label} unused concessional cap from {year_label} ($)",
                 min_value=0.0,
-                value=float(_state_value(f"{key_prefix}_unused_cap_{year_label}", default_unused_cap_amounts.get(year_label, 0.0))),
                 step=1000.0,
                 format="%.0f",
                 key=f"{key_prefix}_unused_cap_{year_label}",
@@ -423,10 +469,10 @@ st.caption(
 with st.sidebar:
     st.markdown("### Benchmark presets")
     benchmark_case_options = [""] + [case["id"] for case in benchmark_cases]
+    _ensure_state_option("benchmark_case_selector", benchmark_case_options, "")
     selected_benchmark_case = st.selectbox(
         "Load benchmark case",
         options=benchmark_case_options,
-        index=_state_option_index("benchmark_case_selector", benchmark_case_options, ""),
         key="benchmark_case_selector",
         format_func=lambda value: (
             "None"
@@ -450,10 +496,10 @@ with st.sidebar:
         "This is useful for validating the planner against the benchmark cases without re-entering every field manually."
     )
     projection_timing_options = ["anniversary", "moneysmart_july_1"]
+    _ensure_state_option("projection_timing_mode", projection_timing_options, "anniversary")
     projection_timing_mode = st.selectbox(
         "Projection timing",
         options=projection_timing_options,
-        index=_state_option_index("projection_timing_mode", projection_timing_options, "anniversary"),
         key="projection_timing_mode",
         format_func=lambda value: (
             "Planner anniversary timing"
@@ -472,10 +518,10 @@ with st.sidebar:
             "Leave it off for your normal planning scenarios unless you specifically want the Moneysmart-style timing convention."
         )
     retirement_drawdown_timing_options = ["monthly", "midyear_annual", "year_end_annual"]
+    _ensure_state_option("retirement_drawdown_timing_mode", retirement_drawdown_timing_options, "monthly")
     retirement_drawdown_timing_mode = st.selectbox(
         "Retirement draw timing",
         options=retirement_drawdown_timing_options,
-        index=_state_option_index("retirement_drawdown_timing_mode", retirement_drawdown_timing_options, "monthly"),
         key="retirement_drawdown_timing_mode",
         format_func=lambda value: (
             "Monthly through year"
@@ -491,28 +537,28 @@ with st.sidebar:
 
     st.markdown("### Household profile")
     relationship_options = ["single", "couple"]
+    _ensure_state_option("relationship_status", relationship_options, "couple")
     relationship_status = st.radio(
         "Household mode",
         options=relationship_options,
-        index=_state_option_index("relationship_status", relationship_options, "couple"),
         key="relationship_status",
         format_func=lambda value: "Single" if value == "single" else "Couple",
         horizontal=True,
     )
     homeowner_options = ["homeowner", "non_homeowner"]
+    _ensure_state_option("homeowner_status", homeowner_options, "homeowner")
     homeowner_status = st.radio(
         "Homeowner status for Age Pension test",
         options=homeowner_options,
-        index=_state_option_index("homeowner_status", homeowner_options, "homeowner"),
         key="homeowner_status",
         format_func=lambda value: "Homeowner" if value == "homeowner" else "Non-homeowner",
         horizontal=True,
     )
 
     st.markdown("### Person 1")
+    _ensure_state_date("birth_date_1", default_birth_date_person_1, min_value=date(1940, 1, 1), max_value=today)
     birth_date_1 = st.date_input(
         "Person 1 date of birth",
-        value=_state_value("birth_date_1", default_birth_date_person_1),
         min_value=date(1940, 1, 1),
         max_value=today,
         key="birth_date_1",
@@ -520,26 +566,25 @@ with st.sidebar:
     )
     current_age_1 = calculate_age(birth_date_1, today)
     st.caption(f"Person 1 current age: {current_age_1}")
+    _ensure_state_number("retirement_age_1", 67, min_value=max(int(current_age_1), 18), max_value=95, integer=True)
     retirement_age_1 = st.number_input(
         "Person 1 retirement age",
         min_value=max(int(current_age_1), 18),
         max_value=95,
-        value=max(int(_state_value("retirement_age_1", 67)), max(int(current_age_1), 18)),
         step=1,
         key="retirement_age_1",
     )
+    _ensure_state_number("planning_age_1", 92, min_value=max(int(retirement_age_1) + 1, 19), max_value=110, integer=True)
     planning_age_1 = st.number_input(
         "Person 1 planning age",
         min_value=max(int(retirement_age_1) + 1, 19),
         max_value=110,
-        value=max(int(_state_value("planning_age_1", 92)), max(int(retirement_age_1) + 1, 19)),
         step=1,
         key="planning_age_1",
     )
     current_super_balance_1 = st.number_input(
         "Person 1 current super balance ($)",
         min_value=0.0,
-        value=float(_state_value("current_super_balance_1", 120000.0)),
         step=10000.0,
         format="%.0f",
         key="current_super_balance_1",
@@ -547,7 +592,6 @@ with st.sidebar:
     annual_salary_1 = st.number_input(
         "Person 1 current salary ($/yr)",
         min_value=0.0,
-        value=float(_state_value("annual_salary_1", 82000.0)),
         step=5000.0,
         format="%.0f",
         key="annual_salary_1",
@@ -555,17 +599,16 @@ with st.sidebar:
     annual_non_salary_income_1 = st.number_input(
         "Person 1 gross taxable non-salary income ($/yr)",
         min_value=0.0,
-        value=float(_state_value("annual_non_salary_income_1", 0.0)),
         step=2500.0,
         format="%.0f",
         key="annual_non_salary_income_1",
         help="Enter gross taxable income only. Do not enter after-tax cashflow here. If the income comes from financial assets outside super entered below, usually leave this at 0 unless you want to model a separate taxable income stream.",
     )
     product_options = ["accumulation", "account_based_pension", "transition_to_retirement_income_stream"]
+    _ensure_state_option("super_product_type_1", product_options, "accumulation")
     super_product_type_1 = st.selectbox(
         "Person 1 super product / access mode",
         options=product_options,
-        index=_state_option_index("super_product_type_1", product_options, "accumulation"),
         key="super_product_type_1",
         format_func=_format_super_product_type,
         help="This controls both pension drawdown rules and, before Age Pension age, whether Centrelink treats the super as exempt accumulation or an assessable income stream.",
@@ -574,13 +617,11 @@ with st.sidebar:
         "Person 1 salary growth (%/yr)",
         min_value=0.0,
         max_value=8.0,
-        value=float(_state_value("annual_salary_growth_1", 3.0)),
         step=0.25,
         key="annual_salary_growth_1",
     )
     use_fixed_employer_contribution_1 = st.checkbox(
         "Use fixed employer contribution for Person 1",
-        value=bool(_state_value("use_fixed_employer_contribution_1", True)),
         key="use_fixed_employer_contribution_1",
         help=(
             "If selected, this annual dollar amount fully overrides the percentage-based employer super contribution "
@@ -591,7 +632,6 @@ with st.sidebar:
         "Person 1 employer super rate (% of salary)",
         min_value=0.0,
         max_value=20.0,
-        value=float(_state_value("employer_super_rate_1", 12.0)),
         step=0.25,
         disabled=use_fixed_employer_contribution_1,
         key="employer_super_rate_1",
@@ -601,7 +641,6 @@ with st.sidebar:
         employer_super_annual_amount_override_1 = st.number_input(
             "Person 1 fixed employer contribution ($/yr)",
             min_value=0.0,
-            value=float(_state_value("employer_super_annual_amount_override_1", 20962.0)),
             step=1000.0,
             format="%.0f",
             key="employer_super_annual_amount_override_1",
@@ -614,7 +653,6 @@ with st.sidebar:
     annual_salary_sacrifice_1 = st.number_input(
         "Person 1 before-tax contribution ($/yr)",
         min_value=0.0,
-        value=float(_state_value("annual_salary_sacrifice_1", 27270.0)),
         step=1000.0,
         format="%.0f",
         key="annual_salary_sacrifice_1",
@@ -622,7 +660,6 @@ with st.sidebar:
     annual_after_tax_contribution_1 = st.number_input(
         "Person 1 after-tax contribution ($/yr)",
         min_value=0.0,
-        value=float(_state_value("annual_after_tax_contribution_1", 0.0)),
         step=1000.0,
         format="%.0f",
         key="annual_after_tax_contribution_1",
@@ -644,35 +681,34 @@ with st.sidebar:
     unused_concessional_cap_amounts_2: tuple[UnusedConcessionalCapAmount, ...] = ()
     if relationship_status == "couple":
         st.markdown("### Person 2")
+        _ensure_state_date("birth_date_2", default_birth_date_person_2, min_value=date(1940, 1, 1), max_value=today)
         birth_date_2 = st.date_input(
             "Person 2 date of birth",
-            value=_state_value("birth_date_2", default_birth_date_person_2),
             min_value=date(1940, 1, 1),
             max_value=today,
             key="birth_date_2",
         )
         current_age_2 = calculate_age(birth_date_2, today)
         st.caption(f"Person 2 current age: {current_age_2}")
+        _ensure_state_number("retirement_age_2", 64, min_value=max(int(current_age_2), 18), max_value=95, integer=True)
         retirement_age_2 = st.number_input(
             "Person 2 retirement age",
             min_value=max(int(current_age_2), 18),
             max_value=95,
-            value=max(int(_state_value("retirement_age_2", 64)), max(int(current_age_2), 18)),
             step=1,
             key="retirement_age_2",
         )
+        _ensure_state_number("planning_age_2", 90, min_value=max(int(retirement_age_2) + 1, 19), max_value=110, integer=True)
         planning_age_2 = st.number_input(
             "Person 2 planning age",
             min_value=max(int(retirement_age_2) + 1, 19),
             max_value=110,
-            value=max(int(_state_value("planning_age_2", 90)), max(int(retirement_age_2) + 1, 19)),
             step=1,
             key="planning_age_2",
         )
         current_super_balance_2 = st.number_input(
             "Person 2 current super balance ($)",
             min_value=0.0,
-            value=float(_state_value("current_super_balance_2", 440000.0)),
             step=10000.0,
             format="%.0f",
             key="current_super_balance_2",
@@ -680,7 +716,6 @@ with st.sidebar:
         annual_salary_2 = st.number_input(
             "Person 2 current salary ($/yr)",
             min_value=0.0,
-            value=float(_state_value("annual_salary_2", 0.0)),
             step=5000.0,
             format="%.0f",
             key="annual_salary_2",
@@ -688,16 +723,15 @@ with st.sidebar:
         annual_non_salary_income_2 = st.number_input(
             "Person 2 gross taxable non-salary income ($/yr)",
             min_value=0.0,
-            value=float(_state_value("annual_non_salary_income_2", 0.0)),
             step=2500.0,
             format="%.0f",
             key="annual_non_salary_income_2",
             help="Enter gross taxable income only. Do not enter after-tax cashflow here. If the income comes from financial assets outside super entered below, usually leave this at 0 unless you want to model a separate taxable income stream.",
         )
+        _ensure_state_option("super_product_type_2", product_options, "accumulation")
         super_product_type_2 = st.selectbox(
             "Person 2 super product / access mode",
             options=product_options,
-            index=_state_option_index("super_product_type_2", product_options, "accumulation"),
             key="super_product_type_2",
             format_func=_format_super_product_type,
             help="This controls both pension drawdown rules and, before Age Pension age, whether Centrelink treats the super as exempt accumulation or an assessable income stream.",
@@ -706,7 +740,6 @@ with st.sidebar:
             "Person 2 salary growth (%/yr)",
             min_value=0.0,
             max_value=8.0,
-            value=float(_state_value("annual_salary_growth_2", 3.0)),
             step=0.25,
             key="annual_salary_growth_2",
         )
@@ -714,14 +747,12 @@ with st.sidebar:
             "Person 2 employer super rate (% of salary)",
             min_value=0.0,
             max_value=20.0,
-            value=float(_state_value("employer_super_rate_2", 12.0)),
             step=0.25,
             key="employer_super_rate_2",
         )
         annual_salary_sacrifice_2 = st.number_input(
             "Person 2 before-tax contribution ($/yr)",
             min_value=0.0,
-            value=float(_state_value("annual_salary_sacrifice_2", 0.0)),
             step=1000.0,
             format="%.0f",
             key="annual_salary_sacrifice_2",
@@ -729,7 +760,6 @@ with st.sidebar:
         annual_after_tax_contribution_2 = st.number_input(
             "Person 2 after-tax contribution ($/yr)",
             min_value=0.0,
-            value=float(_state_value("annual_after_tax_contribution_2", 3000.0)),
             step=1000.0,
             format="%.0f",
             key="annual_after_tax_contribution_2",
@@ -765,7 +795,6 @@ with st.sidebar:
     annual_retirement_spending = st.number_input(
         "Household retirement spending target ($/yr)",
         min_value=0.0,
-        value=float(_state_value("annual_retirement_spending", 85000.0)),
         step=2500.0,
         format="%.0f",
         key="annual_retirement_spending",
@@ -774,7 +803,6 @@ with st.sidebar:
     annual_other_income = st.number_input(
         "Shared household gross taxable income before Age Pension ($/yr)",
         min_value=0.0,
-        value=float(_state_value("annual_other_income", 0.0)),
         step=2500.0,
         format="%.0f",
         key="annual_other_income",
@@ -784,7 +812,6 @@ with st.sidebar:
         "Other income growth (%/yr)",
         min_value=0.0,
         max_value=8.0,
-        value=float(_state_value("annual_other_income_growth", 2.5)),
         step=0.25,
         key="annual_other_income_growth",
         help="Applied to both person-level non-salary income and shared household other income.",
@@ -792,7 +819,6 @@ with st.sidebar:
     retirement_financial_assets = st.number_input(
         "Financial assets outside super at retirement ($)",
         min_value=0.0,
-        value=float(_state_value("retirement_financial_assets", 100000.0)),
         step=5000.0,
         format="%.0f",
         key="retirement_financial_assets",
@@ -800,14 +826,12 @@ with st.sidebar:
     )
     use_financial_assets_for_spending = st.checkbox(
         "Use financial assets outside super to help fund retirement spending",
-        value=bool(_state_value("use_financial_assets_for_spending", True)),
         key="use_financial_assets_for_spending",
         help="If selected, this balance is drawn down before extra super draw. The Age Pension estimate still applies deeming to the remaining balance. This does not separately model actual dividend or interest yield from the same assets.",
     )
     retirement_other_assessable_assets = st.number_input(
         "Other assessable assets at retirement ($)",
         min_value=0.0,
-        value=float(_state_value("retirement_other_assessable_assets", 70000.0)),
         step=5000.0,
         format="%.0f",
         key="retirement_other_assessable_assets",
@@ -815,7 +839,6 @@ with st.sidebar:
     st.markdown("### Inheritance / windfall")
     include_cash_inheritance = st.checkbox(
         "Include one-off cash inheritance or windfall",
-        value=bool(_state_value("include_cash_inheritance", False)),
         key="include_cash_inheritance",
     )
     cash_inheritance_event: CashInheritanceEvent | None = None
@@ -823,7 +846,6 @@ with st.sidebar:
         inheritance_amount = st.number_input(
             "Cash inheritance amount ($)",
             min_value=0.0,
-            value=float(_state_value("inheritance_amount", 150000.0)),
             step=5000.0,
             format="%.0f",
             key="inheritance_amount",
@@ -831,20 +853,20 @@ with st.sidebar:
         inheritance_timing_options = ["person_1_age", "calendar_year"]
         if relationship_status == "couple":
             inheritance_timing_options.insert(1, "person_2_age")
+        _ensure_state_option("inheritance_timing", inheritance_timing_options, "person_1_age")
         inheritance_timing = st.selectbox(
             "Inheritance timing basis",
             options=inheritance_timing_options,
-            index=_state_option_index("inheritance_timing", inheritance_timing_options, "person_1_age"),
             key="inheritance_timing",
             format_func=_format_inheritance_timing,
             help="This first version models one household cash inheritance only.",
         )
         if inheritance_timing == "calendar_year":
+            _ensure_state_number("inheritance_calendar_year", min(today.year + 10, today.year + 80), min_value=today.year, max_value=today.year + 80, integer=True)
             inheritance_calendar_year = st.number_input(
                 "Expected inheritance calendar year",
                 min_value=today.year,
                 max_value=today.year + 80,
-                value=int(_state_value("inheritance_calendar_year", min(today.year + 10, today.year + 80))),
                 step=1,
                 key="inheritance_calendar_year",
             )
@@ -856,21 +878,17 @@ with st.sidebar:
         else:
             inheritance_person_label = "Person 1" if inheritance_timing == "person_1_age" else "Person 2"
             inheritance_current_age = current_age_1 if inheritance_person_label == "Person 1" else current_age_2
+            _ensure_state_number(
+                "person_1_inheritance_trigger_age" if inheritance_person_label == "Person 1" else "person_2_inheritance_trigger_age",
+                67,
+                min_value=max(int(inheritance_current_age), 18),
+                max_value=110,
+                integer=True,
+            )
             inheritance_trigger_age = st.number_input(
                 f"{inheritance_person_label} age at inheritance",
                 min_value=max(int(inheritance_current_age), 18),
                 max_value=110,
-                value=max(
-                    int(
-                        _state_value(
-                            "person_1_inheritance_trigger_age"
-                            if inheritance_person_label == "Person 1"
-                            else "person_2_inheritance_trigger_age",
-                            67,
-                        )
-                    ),
-                    max(int(inheritance_current_age), 18),
-                ),
                 step=1,
                 key=(
                     "person_1_inheritance_trigger_age"
@@ -891,14 +909,12 @@ with st.sidebar:
     target_estate = st.number_input(
         "Desired estate at plan end ($)",
         min_value=0.0,
-        value=float(_state_value("target_estate", 0.0)),
         step=10000.0,
         format="%.0f",
         key="target_estate",
     )
     include_age_pension = st.checkbox(
         "Include Centrelink Age Pension estimate",
-        value=bool(_state_value("include_age_pension", True)),
         key="include_age_pension",
     )
 
@@ -907,7 +923,6 @@ with st.sidebar:
         "Pre-retirement net return (%/yr)",
         min_value=0.0,
         max_value=12.0,
-        value=float(_state_value("annual_return_pre", 7.0)),
         step=0.25,
         key="annual_return_pre",
     )
@@ -915,7 +930,6 @@ with st.sidebar:
         "Retirement-phase net return (%/yr)",
         min_value=0.0,
         max_value=12.0,
-        value=float(_state_value("annual_return_post", 5.0)),
         step=0.25,
         key="annual_return_post",
     )
@@ -923,7 +937,6 @@ with st.sidebar:
         "Inflation (%/yr)",
         min_value=0.0,
         max_value=8.0,
-        value=float(_state_value("inflation_rate", 2.5)),
         step=0.25,
         key="inflation_rate",
     )
