@@ -4,7 +4,8 @@
   "source_url": "https://www.servicesaustralia.gov.au/how-much-age-pension-you-can-get?context=22526",
   "notes": [
     "Rates are fortnightly maximum normal rates before tax.",
-    "This starter app uses the standard single and couple-combined rates only."
+    "This starter app uses the standard single and couple-combined rates only.",
+    "The 20 March 2026 record matches the Services Australia page updated 20 March 2026."
   ],
   "records": [
     {
@@ -12,6 +13,12 @@
       "single_fortnight": 1178.7,
       "couple_each_fortnight": 888.5,
       "couple_combined_fortnight": 1777.0
+    },
+    {
+      "effective_from": "2026-03-20",
+      "single_fortnight": 1200.9,
+      "couple_each_fortnight": 905.2,
+      "couple_combined_fortnight": 1810.4
     }
   ]
 }

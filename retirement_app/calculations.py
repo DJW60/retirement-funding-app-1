@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from datetime import date
 import math
 
 import pandas as pd
@@ -28,6 +29,8 @@ _SUPER_PRODUCT_TYPES = {
     "transition_to_retirement_income_stream",
 }
 _INHERITANCE_TRIGGER_MODES = {"person_age", "calendar_year"}
+_PROJECTION_TIMING_MODES = {"anniversary", "moneysmart_july_1"}
+_RETIREMENT_DRAWDOWN_TIMING_MODES = {"monthly", "midyear_annual", "year_end_annual"}
 
 
 def _household_people(inputs: RetirementInputs) -> list[PersonProfile]:
@@ -162,6 +165,17 @@ def _validate_inputs(inputs: RetirementInputs) -> None:
         if float(value) <= -1.0:
             raise ValueError(f"{field_name} must be greater than -100%.")
 
+    if inputs.projection_timing_mode not in _PROJECTION_TIMING_MODES:
+        raise ValueError(
+            "projection_timing_mode must be one of: " + ", ".join(sorted(_PROJECTION_TIMING_MODES)) + "."
+        )
+    if inputs.retirement_drawdown_timing_mode not in _RETIREMENT_DRAWDOWN_TIMING_MODES:
+        raise ValueError(
+            "retirement_drawdown_timing_mode must be one of: "
+            + ", ".join(sorted(_RETIREMENT_DRAWDOWN_TIMING_MODES))
+            + "."
+        )
+
     if inputs.cash_inheritance_event is not None:
         _validate_cash_inheritance_event(inputs.cash_inheritance_event, inputs)
 
@@ -202,12 +216,112 @@ def _resolve_cash_inheritance_trigger_offset(
     return max(int(event.trigger_age) - int(current_ages[event.trigger_person_label]), 0)
 
 
-def _salary_for_year(person: PersonProfile, year_offset: int) -> float:
-    return float(person.annual_salary) * ((1.0 + float(person.annual_salary_growth)) ** int(year_offset))
+def _salary_for_year(person: PersonProfile, year_offset: float) -> float:
+    return float(person.annual_salary) * ((1.0 + float(person.annual_salary_growth)) ** max(float(year_offset), 0.0))
 
 
 def _inflate(value: float, years: int, growth_rate: float) -> float:
-    return float(value) * ((1.0 + float(growth_rate)) ** max(int(years), 0))
+    return float(value) * ((1.0 + float(growth_rate)) ** max(float(years), 0.0))
+
+
+def _safe_replace_year(value: date, year: int) -> date:
+    try:
+        return value.replace(year=int(year))
+    except ValueError:
+        return value.replace(year=int(year), day=28)
+
+
+def _year_fraction(start_date: date, end_date: date) -> float:
+    return max((end_date - start_date).days / 365.25, 0.0)
+
+
+def _next_july_first_on_or_after(value: date) -> date:
+    july_first = date(value.year, 7, 1)
+    if value <= july_first:
+        return july_first
+    return date(value.year + 1, 7, 1)
+
+
+def _date_reaching_age(person: PersonProfile, target_age: int) -> date:
+    return _safe_replace_year(person.birth_date, person.birth_date.year + int(target_age))
+
+
+def _moneysmart_trigger_date_for_age(person: PersonProfile, target_age: int, *, as_of_date: date) -> date:
+    return max(_next_july_first_on_or_after(_date_reaching_age(person, target_age)), as_of_date)
+
+
+def _moneysmart_first_cashflow_date(person: PersonProfile, *, preservation_age: int, as_of_date: date) -> date:
+    trigger_age = preservation_age if person.super_product_type == "transition_to_retirement_income_stream" else person.retirement_age
+    return _moneysmart_trigger_date_for_age(person, trigger_age, as_of_date=as_of_date)
+
+
+def _moneysmart_full_retirement_date(person: PersonProfile, *, as_of_date: date) -> date:
+    return _moneysmart_trigger_date_for_age(person, person.retirement_age, as_of_date=as_of_date)
+
+
+def _apply_period_balance_update(
+    *,
+    start_balance: float,
+    net_contribution: float,
+    annual_return_rate: float,
+    period_years: float,
+    mid_period_contribution_timing: bool,
+) -> float:
+    growth_factor = (1.0 + float(annual_return_rate)) ** max(float(period_years), 0.0)
+    if mid_period_contribution_timing:
+        contribution_growth_factor = (1.0 + float(annual_return_rate)) ** max(float(period_years) / 2.0, 0.0)
+    else:
+        contribution_growth_factor = growth_factor
+    return max(
+        float(start_balance) * growth_factor + float(net_contribution) * contribution_growth_factor,
+        0.0,
+    )
+
+
+def _apply_periodic_super_drawdown(
+    *,
+    start_balance: float,
+    annual_return_rate: float,
+    requested_annual_draw: float,
+    period_years: float = 1.0,
+    timing_mode: str = "monthly",
+    payments_per_year: int = 12,
+) -> tuple[float, float]:
+    balance = max(float(start_balance), 0.0)
+    requested_annual_draw = max(float(requested_annual_draw), 0.0)
+    period_years = max(float(period_years), 0.0)
+    if balance <= 0.0 or period_years <= 0.0:
+        return balance, 0.0
+
+    if timing_mode == "year_end_annual":
+        growth_factor = (1.0 + float(annual_return_rate)) ** period_years
+        balance *= growth_factor
+        actual_draw = min(balance, requested_annual_draw)
+        balance -= actual_draw
+        return max(balance, 0.0), actual_draw
+
+    if timing_mode == "midyear_annual":
+        half_growth = (1.0 + float(annual_return_rate)) ** (period_years / 2.0)
+        balance *= half_growth
+        actual_draw = min(balance, requested_annual_draw)
+        balance -= actual_draw
+        balance *= half_growth
+        return max(balance, 0.0), actual_draw
+
+    periods = max(int(round(float(payments_per_year) * period_years)), 1)
+    step_years = period_years / periods
+    half_step_growth = (1.0 + float(annual_return_rate)) ** (step_years / 2.0)
+    requested_draw_per_period = requested_annual_draw / periods
+    actual_draw = 0.0
+
+    for _ in range(periods):
+        balance *= half_step_growth
+        draw_this_period = min(balance, requested_draw_per_period)
+        balance -= draw_this_period
+        actual_draw += draw_this_period
+        balance *= half_step_growth
+
+    return max(balance, 0.0), actual_draw
 
 
 def _build_household_salary_sacrifice_inputs(
@@ -237,21 +351,21 @@ def _build_household_salary_sacrifice_inputs(
     return replace(inputs, primary_person=primary_person, partner_person=partner_person)
 
 
-def _available_employment_income(person: PersonProfile, year_offset: int) -> float:
+def _available_employment_income(person: PersonProfile, year_offset: float, *, period_years: float = 1.0) -> float:
     salary = _salary_for_year(person, year_offset)
     return max(
         salary - float(person.annual_salary_sacrifice) - float(person.annual_after_tax_contribution),
         0.0,
-    )
+    ) * max(float(period_years), 0.0)
 
 
-def _taxable_work_income(person: PersonProfile, year_offset: int) -> float:
+def _taxable_work_income(person: PersonProfile, year_offset: float, *, period_years: float = 1.0) -> float:
     salary = _salary_for_year(person, year_offset)
-    return max(salary - float(person.annual_salary_sacrifice), 0.0)
+    return max(salary - float(person.annual_salary_sacrifice), 0.0) * max(float(period_years), 0.0)
 
 
-def _non_salary_income_for_year(person: PersonProfile, year_offset: int, growth_rate: float) -> float:
-    return _inflate(person.annual_non_salary_income, year_offset, growth_rate)
+def _non_salary_income_for_year(person: PersonProfile, year_offset: float, growth_rate: float, *, period_years: float = 1.0) -> float:
+    return _inflate(person.annual_non_salary_income, year_offset, growth_rate) * max(float(period_years), 0.0)
 
 
 def _is_super_assessable_for_age_pension(
@@ -379,7 +493,90 @@ def _allocate_additional_draw(
     return draw_by_person
 
 
+def _project_retirement_with_moneysmart_timing(inputs: RetirementInputs) -> RetirementProjection:
+    aligned_as_of_date = _next_july_first_on_or_after(inputs.as_of_date)
+    if aligned_as_of_date == inputs.as_of_date:
+        projection = _project_retirement_standard(inputs)
+        return projection
+
+    period_years = _year_fraction(inputs.as_of_date, aligned_as_of_date)
+    current_financial_year_start_year = get_financial_year_start_year(inputs.as_of_date)
+    bridged_people: list[PersonProfile] = []
+
+    for person in _household_people(inputs):
+        salary = _salary_for_year(person, 0.0)
+        carry_forward_enabled = (
+            person.carry_forward_previous_30_june_total_super_balance is not None
+            or bool(person.unused_concessional_cap_amounts)
+        )
+        contribution_summary = calculate_super_contribution_summary(
+            annual_salary=salary * period_years,
+            employer_super_rate=float(person.employer_super_rate),
+            annual_salary_sacrifice=float(person.annual_salary_sacrifice) * period_years,
+            annual_after_tax_contribution=float(person.annual_after_tax_contribution) * period_years,
+            employer_super_annual_amount_override=(
+                float(person.employer_super_annual_amount_override) * period_years
+                if person.employer_super_annual_amount_override is not None
+                else None
+            ),
+            prior_30_june_total_super_balance=person.carry_forward_previous_30_june_total_super_balance,
+            unused_concessional_cap_amounts=person.unused_concessional_cap_amounts,
+            financial_year_start_year=current_financial_year_start_year,
+            as_of_date=inputs.as_of_date,
+        )
+        bridged_balance = _apply_period_balance_update(
+            start_balance=person.current_super_balance,
+            net_contribution=float(contribution_summary["net_contribution"]),
+            annual_return_rate=float(inputs.annual_return_pre),
+            period_years=period_years,
+            mid_period_contribution_timing=True,
+        )
+        bridged_people.append(
+            replace(
+                person,
+                current_super_balance=bridged_balance,
+                carry_forward_previous_30_june_total_super_balance=(
+                    bridged_balance if carry_forward_enabled else None
+                ),
+                unused_concessional_cap_amounts=(
+                    contribution_summary["next_unused_concessional_cap_amounts"] if carry_forward_enabled else ()
+                ),
+            )
+        )
+
+    primary_person = bridged_people[0]
+    partner_person = bridged_people[1] if len(bridged_people) > 1 else None
+    aligned_inputs = replace(
+        inputs,
+        primary_person=primary_person,
+        partner_person=partner_person,
+        as_of_date=aligned_as_of_date,
+    )
+    projection = _project_retirement_standard(aligned_inputs)
+
+    original_current_ages = {person.label: _current_age(person, inputs.as_of_date) for person in _household_people(inputs)}
+    original_preservation_ages = {
+        person.label: calculate_preservation_age(person.birth_date, inputs.as_of_date)
+        for person in _household_people(inputs)
+    }
+    projection.summary["current_age_primary"] = int(original_current_ages[inputs.primary_person.label])
+    projection.summary["current_age_partner"] = (
+        int(original_current_ages[inputs.partner_person.label]) if inputs.partner_person is not None else None
+    )
+    projection.summary["preservation_age_primary"] = int(original_preservation_ages[inputs.primary_person.label])
+    projection.summary["preservation_age_partner"] = (
+        int(original_preservation_ages[inputs.partner_person.label]) if inputs.partner_person is not None else None
+    )
+    return projection
+
+
 def project_retirement(inputs: RetirementInputs) -> RetirementProjection:
+    if inputs.projection_timing_mode == "moneysmart_july_1":
+        return _project_retirement_with_moneysmart_timing(inputs)
+    return _project_retirement_standard(inputs)
+
+
+def _project_retirement_standard(inputs: RetirementInputs) -> RetirementProjection:
     _validate_inputs(inputs)
 
     people = _household_people(inputs)
@@ -605,20 +802,22 @@ def project_retirement(inputs: RetirementInputs) -> RetirementProjection:
             )
             gross_cash_income = available_employment_income + non_salary_income + shared_household_income_per_person
             taxable_income = taxable_work_income + non_salary_income + shared_household_income_per_person
-            tax_result = calculate_personal_income_tax(
-                taxable_income=taxable_income,
-                as_of_date=inputs.as_of_date,
-            )
-            personal_tax = float(tax_result["total_tax"])
-            net_after_tax_income = max(gross_cash_income - personal_tax, 0.0)
+            rebate_income = taxable_income
 
-            balance_after_contributions = max(start_balance + net_contribution, 0.0)
             return_rate = (
                 float(inputs.annual_return_post)
                 if year_offset >= cashflow_start_year_offsets[person.label]
                 else float(inputs.annual_return_pre)
             )
-            balance_after_return = max(balance_after_contributions * (1.0 + return_rate), 0.0)
+            balance_after_return = _apply_period_balance_update(
+                start_balance=start_balance,
+                net_contribution=net_contribution,
+                annual_return_rate=return_rate,
+                period_years=1.0,
+                mid_period_contribution_timing=(
+                    year_offset < retirement_offset and inputs.projection_timing_mode == "moneysmart_july_1"
+                ),
+            )
 
             if year_offset < retirement_offset:
                 carry_forward_unused_cap_state_by_person[person.label] = contribution_summary[
@@ -635,9 +834,11 @@ def project_retirement(inputs: RetirementInputs) -> RetirementProjection:
                 "non_salary_income": non_salary_income,
                 "gross_cash_income": gross_cash_income,
                 "taxable_income": taxable_income,
-                "personal_tax": personal_tax,
-                "net_income_after_tax": net_after_tax_income,
+                "rebate_income": rebate_income,
+                "personal_tax": 0.0,
+                "net_income_after_tax": gross_cash_income,
                 "net_contribution": net_contribution,
+                "return_rate": return_rate,
                 "balance_after_return": balance_after_return,
                 "can_draw": can_draw,
                 "assessable_for_age_pension": assessable_for_age_pension,
@@ -648,10 +849,40 @@ def project_retirement(inputs: RetirementInputs) -> RetirementProjection:
             else:
                 household_start_super_exempt += start_balance
             total_work_and_other_income += gross_cash_income
-            total_taxable_income += taxable_income
+            total_net_contributions += net_contribution
+
+        for person in people:
+            person_data = person_year_data[person.label]
+            spouse_data = next(
+                (
+                    person_year_data[other_person.label]
+                    for other_person in people
+                    if other_person.label != person.label
+                ),
+                None,
+            )
+            tax_result = calculate_personal_income_tax(
+                taxable_income=float(person_data["taxable_income"]),
+                rebate_income=float(person_data["rebate_income"]),
+                as_of_date=inputs.as_of_date,
+                age=int(person_data["age"]),
+                relationship_status=inputs.relationship_status,
+                spouse_taxable_income=(
+                    float(spouse_data["taxable_income"]) if spouse_data is not None else 0.0
+                ),
+                spouse_rebate_income=(
+                    float(spouse_data["rebate_income"]) if spouse_data is not None else 0.0
+                ),
+                spouse_age=(int(spouse_data["age"]) if spouse_data is not None else None),
+            )
+            personal_tax = float(tax_result["total_tax"])
+            net_after_tax_income = max(float(person_data["gross_cash_income"]) - personal_tax, 0.0)
+            person_data["personal_tax"] = personal_tax
+            person_data["net_income_after_tax"] = net_after_tax_income
+            person_data["tax_result"] = tax_result
+            total_taxable_income += float(person_data["taxable_income"])
             total_personal_tax += personal_tax
             total_net_after_tax_income += net_after_tax_income
-            total_net_contributions += net_contribution
 
         if year_offset < first_cashflow_year_offset:
             balances = {
@@ -777,19 +1008,22 @@ def project_retirement(inputs: RetirementInputs) -> RetirementProjection:
             minimum_draw_by_person=minimum_draw_by_person,
             maximum_draw_by_person=maximum_draw_by_person,
         )
-        actual_super_draw = sum(draw_by_person.values())
-
         balances = {}
+        actual_super_draw = 0.0
         for person in people:
             label = person.label
             person_year_data[label]["minimum_draw"] = minimum_draw_by_person[label]
             person_year_data[label]["maximum_draw"] = maximum_draw_by_person[label]
-            person_year_data[label]["draw"] = draw_by_person[label]
-            balances[label] = max(
-                float(person_year_data[label]["balance_after_return"]) - float(draw_by_person[label]),
-                0.0,
+            end_balance, realized_draw = _apply_periodic_super_drawdown(
+                start_balance=float(person_year_data[label]["start_balance"]),
+                annual_return_rate=float(person_year_data[label]["return_rate"]),
+                requested_annual_draw=float(draw_by_person[label]),
+                timing_mode=inputs.retirement_drawdown_timing_mode,
             )
+            person_year_data[label]["draw"] = realized_draw
+            balances[label] = end_balance
             person_year_data[label]["end_balance"] = balances[label]
+            actual_super_draw += realized_draw
 
         financial_asset_balance = max(financial_asset_balance - financial_assets_used, 0.0)
         excess_pension_cash_to_reserve = _positive_currency_gap(
