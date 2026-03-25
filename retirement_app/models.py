@@ -56,6 +56,8 @@ class RetirementInputs:
     annual_return_pre: float
     annual_return_post: float
     inflation_rate: float
+    projection_timing_mode: str = "anniversary"
+    retirement_drawdown_timing_mode: str = "monthly"
     use_financial_assets_for_spending: bool = True
     cash_inheritance_event: CashInheritanceEvent | None = None
     target_estate: float = 0.0
